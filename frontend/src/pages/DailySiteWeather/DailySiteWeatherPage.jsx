@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   CloudSun,
   Wind,
@@ -11,6 +11,7 @@ import {
   Clock,
   Users,
   Compass,
+  RefreshCw,
 } from 'lucide-react';
 import SectionHeader from '../../components/common/SectionHeader';
 import Badge from '../../components/common/Badge';
@@ -18,23 +19,28 @@ import EmptyState from '../../components/common/EmptyState';
 import LoadingState from '../../components/common/LoadingState';
 import ErrorAlert from '../../components/common/ErrorAlert';
 import { SAMPLE_WEATHER_DATA } from '../../data/sampleData';
+import { api } from '../../services/api';
 
 export default function DailySiteWeatherPage() {
-  const [weatherData] = useState(SAMPLE_WEATHER_DATA);
+  const [weatherData, setWeatherData] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState(null);
   const [viewState, setViewState] = useState('normal');
+
   const [newLog, setNewLog] = useState({
     shift: 'Day Shift (08:00 - 17:00)',
     workerCount: 42,
     highRiskWork: 'Crane Lifts & Facade Installation',
-    supervisorNotes: 'Morning concrete pour for Column C12 completed before noon. Wind gusts under threshold.',
+    supervisorNotes: 'Concrete curing window optimal. Wind gusts under safety threshold.',
   });
+
   const [recentLogs, setRecentLogs] = useState([
     {
       id: 'LOG-304',
       date: 'Today - Oct 25, 2026',
       shift: 'Morning Shift',
       workerCount: 42,
-      weather: '24°C, Partly Cloudy, 22 km/h Wind',
+      weather: '24°C, Partly Cloudy, 18 km/h Wind',
       status: 'Normal Operations',
     },
     {
@@ -42,20 +48,45 @@ export default function DailySiteWeatherPage() {
       date: 'Yesterday - Oct 24, 2026',
       shift: 'Day Shift',
       workerCount: 48,
-      weather: '26°C, Clear, 18 km/h Wind',
+      weather: '26°C, Clear, 16 km/h Wind',
       status: 'Normal Operations',
     },
   ]);
   const [logSubmitted, setLogSubmitted] = useState(false);
 
+  const loadWeather = async () => {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const data = await api.getWeather();
+      setWeatherData(data);
+    } catch (err) {
+      console.warn('Weather fetch error:', err);
+      setErrorMessage(err.message || 'Unable to fetch meteorological telemetry.');
+      // Graceful fallback to calibrated data
+      setWeatherData(SAMPLE_WEATHER_DATA);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadWeather();
+  }, []);
+
   const handleLogSubmit = (e) => {
     e.preventDefault();
+    const currentTemp = weatherData?.current_temperature_celsius
+      ? `${weatherData.current_temperature_celsius}°C`
+      : weatherData?.current?.temp || '24°C';
+    const condition = weatherData?.weather_condition || weatherData?.current?.condition || 'Partly Cloudy';
+
     const entry = {
       id: `LOG-${305 + recentLogs.length}`,
       date: 'Just Now',
       shift: newLog.shift,
       workerCount: Number(newLog.workerCount),
-      weather: `${weatherData.current.temp}, ${weatherData.current.condition}`,
+      weather: `${currentTemp}, ${condition}`,
       status: 'Verified by Engineer',
     };
     setRecentLogs([entry, ...recentLogs]);
@@ -68,11 +99,18 @@ export default function DailySiteWeatherPage() {
       <SectionHeader
         title="Daily Site Assistant & Weather Advisory"
         subtitle="Real-time environmental telemetry, crane wind hazard thresholds, and concrete curing condition checks"
-        badgeText="Weather Telemetry"
+        badgeText={weatherData?.is_live_telemetry ? "Live Telemetry" : "Site Weather"}
         badgeVariant="blue"
         actions={
           <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-400 hidden sm:inline">UI Test Modes:</span>
+            <button
+              onClick={loadWeather}
+              disabled={isLoading}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-white border border-slate-700 flex items-center gap-1.5"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${isLoading ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Refresh Weather</span>
+            </button>
             <select
               value={viewState}
               onChange={(e) => setViewState(e.target.value)}
@@ -94,68 +132,97 @@ export default function DailySiteWeatherPage() {
         />
       )}
 
-      {viewState === 'error' && (
+      {(viewState === 'error' || errorMessage) && (
         <ErrorAlert
-          title="Weather API Satellite Link Lost"
-          message="Could not connect to regional meteorological telemetry stream. (Simulated test error)."
-          onRetry={() => setViewState('normal')}
-          onDismiss={() => setViewState('normal')}
+          title="Weather Feed Notice"
+          message={errorMessage || "Using calibrated site weather parameters."}
+          onRetry={loadWeather}
+          onDismiss={() => {
+            setErrorMessage(null);
+            setViewState('normal');
+          }}
         />
       )}
 
       {viewState === 'empty' && (
         <EmptyState
           title="No Weather Telemetry Received"
-          description="Local weather station is currently offline. Connect API key in Settings."
-          actionLabel="Switch to Simulated Feed"
-          onAction={() => setViewState('normal')}
+          description="Local weather station is currently offline."
+          actionLabel="Reload Weather Feed"
+          onAction={loadWeather}
         />
       )}
 
-      {viewState === 'normal' && (
+      {viewState === 'normal' && weatherData && (
         <>
           {/* Weather KPI Cards */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
               <span className="text-[11px] text-slate-400">Ambient Temp</span>
-              <p className="text-2xl font-black text-amber-400 font-mono mt-1">{weatherData.current.temp}</p>
-              <span className="text-[10px] text-slate-400">{weatherData.current.condition}</span>
+              <p className="text-2xl font-black text-amber-400 font-mono mt-1">
+                {weatherData.current_temperature_celsius !== undefined
+                  ? `${weatherData.current_temperature_celsius}°C`
+                  : weatherData.current?.temp}
+              </p>
+              <span className="text-[10px] text-slate-400">
+                {weatherData.weather_condition || weatherData.current?.condition}
+              </span>
             </div>
 
             <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
               <span className="text-[11px] text-slate-400">Wind Velocity</span>
-              <p className="text-2xl font-black text-sky-400 font-mono mt-1">{weatherData.current.windSpeed}</p>
-              <span className="text-[10px] text-emerald-400">Below Crane Limit</span>
+              <p className="text-2xl font-black text-sky-400 font-mono mt-1">
+                {weatherData.wind_speed_kmh !== undefined
+                  ? `${weatherData.wind_speed_kmh} km/h`
+                  : weatherData.current?.windSpeed}
+              </p>
+              <span className="text-[10px] text-emerald-400">
+                {weatherData.crane_operation_permitted ? "Crane Safe" : "Wind Alert"}
+              </span>
             </div>
 
             <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
               <span className="text-[11px] text-slate-400">Wind Gust Peak</span>
-              <p className="text-2xl font-black text-white font-mono mt-1">{weatherData.current.windGust}</p>
+              <p className="text-2xl font-black text-white font-mono mt-1">
+                {weatherData.wind_gusts_kmh !== undefined
+                  ? `${weatherData.wind_gusts_kmh} km/h`
+                  : weatherData.current?.windGust}
+              </p>
               <span className="text-[10px] text-amber-400">Limit: 38 km/h</span>
             </div>
 
             <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
               <span className="text-[11px] text-slate-400">Relative Humidity</span>
-              <p className="text-2xl font-black text-white font-mono mt-1">{weatherData.current.humidity}</p>
-              <span className="text-[10px] text-slate-400">Normal Curing</span>
+              <p className="text-2xl font-black text-white font-mono mt-1">
+                {weatherData.relative_humidity_percentage !== undefined
+                  ? `${weatherData.relative_humidity_percentage}%`
+                  : weatherData.current?.humidity}
+              </p>
+              <span className="text-[10px] text-slate-400">Curing Metric</span>
             </div>
 
             <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
-              <span className="text-[11px] text-slate-400">Rain Probability</span>
-              <p className="text-2xl font-black text-white font-mono mt-1">{weatherData.current.precipitationChance}</p>
+              <span className="text-[11px] text-slate-400">Rain Chance</span>
+              <p className="text-2xl font-black text-white font-mono mt-1">
+                {weatherData.precipitation_chance !== undefined
+                  ? `${weatherData.precipitation_chance}%`
+                  : weatherData.current?.precipitationChance}
+              </p>
               <span className="text-[10px] text-emerald-400">Low Risk</span>
             </div>
 
             <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
               <span className="text-[11px] text-slate-400">UV Solar Index</span>
-              <p className="text-2xl font-black text-amber-400 font-mono mt-1">{weatherData.current.uvIndex}</p>
-              <span className="text-[10px] text-slate-400">Mandatory Shade</span>
+              <p className="text-2xl font-black text-amber-400 font-mono mt-1">
+                {weatherData.uv_index !== undefined ? weatherData.uv_index : weatherData.current?.uvIndex}
+              </p>
+              <span className="text-[10px] text-slate-400">Hydration Care</span>
             </div>
           </div>
 
           {/* Construction Operational Advisories */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {weatherData.advisories.map((adv, idx) => (
+            {(weatherData.advisories || []).map((adv, idx) => (
               <div
                 key={idx}
                 className="p-5 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col justify-between"
@@ -163,30 +230,32 @@ export default function DailySiteWeatherPage() {
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs font-bold text-white">{adv.title}</span>
-                    <Badge variant={adv.color === 'emerald' ? 'emerald' : adv.color === 'blue' ? 'blue' : 'amber'}>
-                      {adv.level}
+                    <Badge variant={adv.severity_badge || adv.color || 'blue'}>
+                      {adv.status_level || adv.level}
                     </Badge>
                   </div>
-                  <p className="text-xs text-slate-300 leading-relaxed">{adv.desc}</p>
+                  <p className="text-xs text-slate-300 leading-relaxed">{adv.guidance || adv.desc}</p>
                 </div>
               </div>
             ))}
           </div>
 
-          {/* Hourly Forecast Strip */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xs">
-            <h3 className="text-sm font-bold text-white mb-3">Today's Hourly Weather Progression</h3>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-              {weatherData.forecast.map((fc, idx) => (
-                <div key={idx} className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-center text-xs">
-                  <div className="font-mono text-slate-400">{fc.time}</div>
-                  <div className="text-base font-bold text-white font-mono my-1">{fc.temp}</div>
-                  <div className="text-[11px] text-slate-300">{fc.condition}</div>
-                  <div className="text-[10px] text-sky-400 font-mono mt-1">Wind: {fc.wind}</div>
-                </div>
-              ))}
+          {/* Hourly Progression */}
+          {weatherData.hourly_progression?.length > 0 && (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xs">
+              <h3 className="text-sm font-bold text-white mb-3">Today's Hourly Weather Progression</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
+                {weatherData.hourly_progression.map((fc, idx) => (
+                  <div key={idx} className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-center text-xs">
+                    <div className="font-mono text-slate-400">{fc.time}</div>
+                    <div className="text-base font-bold text-white font-mono my-1">{fc.temperature_celsius}°C</div>
+                    <div className="text-[11px] text-slate-300">{fc.condition}</div>
+                    <div className="text-[10px] text-sky-400 font-mono mt-1">Wind: {fc.wind_speed_kmh} km/h</div>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Daily Site Log Form & History */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

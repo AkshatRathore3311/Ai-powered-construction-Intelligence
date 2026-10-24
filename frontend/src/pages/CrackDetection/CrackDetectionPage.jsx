@@ -19,31 +19,56 @@ import EmptyState from '../../components/common/EmptyState';
 import LoadingState from '../../components/common/LoadingState';
 import ErrorAlert from '../../components/common/ErrorAlert';
 import { SAMPLE_CRACK_ANALYSIS_PRESET } from '../../data/sampleData';
+import { api, dataUrlToFile } from '../../services/api';
 
 export default function CrackDetectionPage() {
   const [selectedImage, setSelectedImage] = useState(null);
+  const [selectedFileObj, setSelectedFileObj] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
+  const [errorMessage, setErrorMessage] = useState(null);
   const [viewState, setViewState] = useState('normal'); // 'normal', 'loading', 'empty', 'error'
   const [elementCategory, setElementCategory] = useState('column');
 
-  const handleImageSelected = (imageDataUrl) => {
+  const handleImageSelected = async (imageDataUrl, filename = 'crack_image.jpg') => {
     setSelectedImage(imageDataUrl);
     setAnalysisResult(null);
+    setErrorMessage(null);
+    try {
+      const file = await dataUrlToFile(imageDataUrl, filename);
+      setSelectedFileObj(file);
+    } catch (e) {
+      console.error('File conversion error:', e);
+    }
   };
 
   const handleClearImage = () => {
     setSelectedImage(null);
+    setSelectedFileObj(null);
     setAnalysisResult(null);
+    setErrorMessage(null);
   };
 
-  const handleRunAnalysis = () => {
+  const handleRunAnalysis = async () => {
     if (!selectedImage) return;
     setIsAnalyzing(true);
-    setTimeout(() => {
+    setErrorMessage(null);
+
+    try {
+      let fileToUpload = selectedFileObj;
+      if (!fileToUpload) {
+        fileToUpload = await dataUrlToFile(selectedImage, 'crack_defect.jpg');
+      }
+
+      // Live FastAPI backend invocation
+      const response = await api.analyzeCracks(fileToUpload, elementCategory, 'Metro Heights Tower A');
+      setAnalysisResult(response);
+    } catch (err) {
+      console.error('Crack detection failed:', err);
+      setErrorMessage(err.message || 'Failed to communicate with crack segmentation endpoint.');
+    } finally {
       setIsAnalyzing(false);
-      setAnalysisResult(SAMPLE_CRACK_ANALYSIS_PRESET);
-    }, 1400);
+    }
   };
 
   return (
@@ -51,7 +76,7 @@ export default function CrackDetectionPage() {
       <SectionHeader
         title="Structural Crack Detection & Analysis"
         subtitle="Multimodal computer vision defect assessment for concrete columns, beams, retention walls, and foundations"
-        badgeText="Structural AI"
+        badgeText="OpenCV + Structural AI"
         badgeVariant="blue"
         actions={
           <div className="flex items-center gap-2">
@@ -77,12 +102,15 @@ export default function CrackDetectionPage() {
         />
       )}
 
-      {viewState === 'error' && (
+      {(viewState === 'error' || errorMessage) && (
         <ErrorAlert
-          title="Defect Segmentation Failed"
-          message="Could not isolate fracture contours due to low contrast or lighting. (Simulated test error)."
-          onRetry={() => setViewState('normal')}
-          onDismiss={() => setViewState('normal')}
+          title="Defect Segmentation Alert"
+          message={errorMessage || "Could not isolate fracture contours or connect to backend."}
+          onRetry={handleRunAnalysis}
+          onDismiss={() => {
+            setErrorMessage(null);
+            setViewState('normal');
+          }}
         />
       )}
 
@@ -93,8 +121,7 @@ export default function CrackDetectionPage() {
           actionLabel="Load Sample Concrete Crack"
           onAction={() => {
             setViewState('normal');
-            setSelectedImage(SAMPLE_CRACK_ANALYSIS_PRESET.imageUrl);
-            setAnalysisResult(SAMPLE_CRACK_ANALYSIS_PRESET);
+            handleImageSelected(SAMPLE_CRACK_ANALYSIS_PRESET.imageUrl, "crack_sample.jpg");
           }}
         />
       )}
@@ -173,36 +200,48 @@ export default function CrackDetectionPage() {
               </div>
             </div>
 
-            {/* Visual Measurement Overlay Card */}
+            {/* Diagnostic Details Card */}
             {analysisResult && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
-                <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <Ruler className="w-4 h-4 text-sky-400" />
-                  Estimated Dimensional Profiles
-                </h4>
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                    <Ruler className="w-4 h-4 text-sky-400" />
+                    Inspection Assessment Details
+                  </h4>
+                  <Badge variant={analysisResult.crack_detected ? "rose" : "emerald"} size="xs">
+                    {analysisResult.crack_detected ? "Fracture Isolated" : "No Defect"}
+                  </Badge>
+                </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                   <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                    <span className="text-slate-400">Fracture Type</span>
-                    <p className="text-sm font-bold text-white mt-1">{analysisResult.type}</p>
+                    <span className="text-slate-400">Fracture Typology</span>
+                    <p className="text-sm font-bold text-white mt-1">{analysisResult.crack_type}</p>
                   </div>
                   <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                    <span className="text-slate-400">Estimated Max Width</span>
+                    <span className="text-slate-400">Metric Scale Status</span>
                     <p className="text-sm font-bold text-amber-400 font-mono mt-1">
-                      {analysisResult.estimatedWidth}
+                      {analysisResult.is_dimension_calibrated ? "Calibrated Target" : "Uncalibrated 2D"}
                     </p>
                   </div>
                   <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                    <span className="text-slate-400">Surface Trace Length</span>
-                    <p className="text-sm font-bold text-white font-mono mt-1">
-                      {analysisResult.estimatedLength}
+                    <span className="text-slate-400">Analysis Engine</span>
+                    <p className="text-[11px] font-bold text-white mt-1 truncate">
+                      {analysisResult.detection_method}
                     </p>
                   </div>
                 </div>
 
-                <p className="text-[11px] text-slate-400 mt-3 font-mono">
-                  * Note: AI dimensional estimates are calibrated based on reference surface textures. Formal ultrasonic gauge validation recommended.
-                </p>
+                {analysisResult.limitations?.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-slate-800/80">
+                    <span className="text-[10px] font-bold uppercase text-slate-400">Engine Limitations:</span>
+                    <ul className="text-[11px] text-slate-400 list-disc list-inside mt-1 space-y-0.5">
+                      {analysisResult.limitations.map((lim, idx) => (
+                        <li key={idx}>{lim}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -226,11 +265,11 @@ export default function CrackDetectionPage() {
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-bold text-white">Severity Level:</span>
                         <Badge variant="rose" size="xs">
-                          {analysisResult.severity}
+                          {analysisResult.severity_level}
                         </Badge>
                       </div>
                       <p className="text-xs text-rose-200/90 mt-1">
-                        Exceeds 0.3mm ACI 224R tolerable crack limit for exterior exposure.
+                        Assessed against ACI 224R tolerable crack parameters.
                       </p>
                     </div>
                   </div>
@@ -239,22 +278,22 @@ export default function CrackDetectionPage() {
                   <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs">
                     <div className="text-slate-400 font-semibold mb-1">Structural Impact Assessment:</div>
                     <p className="text-slate-200 leading-relaxed">
-                      {analysisResult.structuralImpact}
+                      {analysisResult.structural_impact_analysis}
                     </p>
                   </div>
 
-                  {/* Urgency and Method */}
+                  {/* Urgency and Confidence */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                     <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                       <span className="text-slate-400">Intervention Urgency:</span>
                       <p className="text-xs font-bold text-amber-400 mt-1 font-mono">
-                        {analysisResult.repairUrgency}
+                        {analysisResult.repair_urgency}
                       </p>
                     </div>
                     <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
-                      <span className="text-slate-400">AI Confidence:</span>
+                      <span className="text-slate-400">Analysis Confidence:</span>
                       <p className="text-xs font-bold text-emerald-400 mt-1 font-mono">
-                        {analysisResult.confidence}
+                        {(analysisResult.confidence * 100).toFixed(1)}%
                       </p>
                     </div>
                   </div>
@@ -266,8 +305,14 @@ export default function CrackDetectionPage() {
                       <span>Recommended Repair Protocol:</span>
                     </div>
                     <p className="text-slate-300 leading-relaxed">
-                      {analysisResult.recommendedMethod}
+                      {analysisResult.recommended_repair_method}
                     </p>
+                  </div>
+
+                  {/* Disclaimer */}
+                  <div className="pt-2 text-[10px] text-slate-400 border-t border-slate-800/80 leading-relaxed">
+                    <p className="font-semibold text-slate-300">Engineering Disclaimer:</p>
+                    <p>{analysisResult.disclaimer}</p>
                   </div>
                 </div>
               ) : (

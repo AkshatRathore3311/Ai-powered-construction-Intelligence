@@ -17,6 +17,7 @@ import EmptyState from '../../components/common/EmptyState';
 import LoadingState from '../../components/common/LoadingState';
 import ErrorAlert from '../../components/common/ErrorAlert';
 import { SAMPLE_KNOWLEDGE_QUESTIONS } from '../../data/sampleData';
+import { api } from '../../services/api';
 
 const INITIAL_MESSAGES = [
   {
@@ -25,32 +26,13 @@ const INITIAL_MESSAGES = [
     text: "Hello! I am your Construction Knowledge & Code Assistant. You can ask me questions about building codes (IBC, ACI, AISC), OSHA safety regulations, concrete curing requirements, or structural failure diagnostics. How can I assist you on-site today?",
     timestamp: '10:00 AM',
   },
-  {
-    id: 2,
-    sender: 'user',
-    text: 'What are the permissible crack widths in reinforced concrete according to ACI 224R?',
-    timestamp: '10:02 AM',
-  },
-  {
-    id: 3,
-    sender: 'assistant',
-    text: `According to **ACI 224R-01 (Control of Cracking in Concrete Structures)**, the maximum tolerable crack widths under service loads are:
-
-- **Dry air or protective membrane:** 0.41 mm (0.016 in.)
-- **Humidity, moist air, soil:** 0.30 mm (0.012 in.)
-- **Deicing chemicals:** 0.18 mm (0.007 in.)
-- **Seawater and seawater spray:** 0.15 mm (0.006 in.)
-- **Water-retaining structures:** 0.10 mm (0.004 in.)
-
-For cracks exceeding these limits in exterior columns or retaining walls, non-destructive testing (such as ultrasonic pulse velocity) and epoxy injection are recommended.`,
-    timestamp: '10:02 AM',
-  },
 ];
 
 export default function AssistantPage() {
   const [messages, setMessages] = useState(INITIAL_MESSAGES);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [errorMessage, setErrorMessage] = useState(null);
   const [viewState, setViewState] = useState('normal');
   const messagesEndRef = useRef(null);
 
@@ -62,7 +44,7 @@ export default function AssistantPage() {
     scrollToBottom();
   }, [messages, isTyping]);
 
-  const handleSendMessage = (textToSend) => {
+  const handleSendMessage = async (textToSend) => {
     const query = textToSend || inputValue;
     if (!query.trim()) return;
 
@@ -76,26 +58,38 @@ export default function AssistantPage() {
     setMessages((prev) => [...prev, userMsg]);
     setInputValue('');
     setIsTyping(true);
+    setErrorMessage(null);
 
-    // Simulate LLM streaming latency
-    setTimeout(() => {
-      setIsTyping(false);
-      let replyText = "Based on standard construction engineering codes and OSHA 1926 guidelines, ensure adequate shoring, proper PPE compliance, and follow ASTM C39 compressive testing procedures before loading the structure.";
+    try {
+      // Live backend invocation
+      const response = await api.chatAssistant(query, 'structural_and_safety_standards');
       
-      if (query.toLowerCase().includes('crane') || query.toLowerCase().includes('power')) {
-        replyText = `**OSHA Standard 1926.1408 (Power line safety for cranes):**\n\n- For lines up to 50 kV: Minimum clearance is **10 feet (3.05 m)**.\n- For lines over 50 kV: Add 0.4 inches for each 1 kV over 50 kV, or maintain **20 feet** minimum buffer.\n- A designated dedicated spotter must be assigned whenever equipment operates within the boundary.`;
-      } else if (query.toLowerCase().includes('curing') || query.toLowerCase().includes('weather')) {
-        replyText = `**ACI 308R Guide to External Curing of Concrete:**\n\n- In hot or windy conditions, use continuous wet burlap or ASTM C309 curing compounds within 30 minutes of final finishing.\n- Avoid thermal shock when stripping forms—keep internal vs. surface temperature gradient under 20°C (36°F).`;
+      let formattedText = response.answer;
+      if (response.standard_references?.length > 0) {
+        formattedText += `\n\n**Standards Referenced:**\n` + response.standard_references.map(r => `• ${r}`).join('\n');
       }
 
       const botReply = {
         id: Date.now() + 1,
         sender: 'assistant',
-        text: replyText,
+        text: formattedText,
+        modelUsed: response.model_used,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
       setMessages((prev) => [...prev, botReply]);
-    }, 1200);
+    } catch (err) {
+      console.error('Chat error:', err);
+      setErrorMessage(err.message || 'Unable to communicate with AI Assistant service.');
+      const fallbackReply = {
+        id: Date.now() + 1,
+        sender: 'assistant',
+        text: "Could not reach the backend AI reasoning service. Please ensure the FastAPI server is running on port 8000.",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      setMessages((prev) => [...prev, fallbackReply]);
+    } finally {
+      setIsTyping(false);
+    }
   };
 
   return (
@@ -103,7 +97,7 @@ export default function AssistantPage() {
       <SectionHeader
         title="Construction Knowledge Assistant"
         subtitle="Specialized AI agent trained on building codes (ACI, IBC, AISC), OSHA standards, and engineering specifications"
-        badgeText="Multimodal LLM"
+        badgeText="Multimodal LLM Integration"
         badgeVariant="blue"
         actions={
           <div className="flex items-center gap-2">
@@ -129,12 +123,15 @@ export default function AssistantPage() {
         />
       )}
 
-      {viewState === 'error' && (
+      {(viewState === 'error' || errorMessage) && (
         <ErrorAlert
-          title="LLM Service Unavailable"
-          message="Unable to communicate with the AI reasoning agent. (FastAPI backend will be added in Phase 2 & 4)."
-          onRetry={() => setViewState('normal')}
-          onDismiss={() => setViewState('normal')}
+          title="Assistant Service Alert"
+          message={errorMessage || "Unable to reach the assistant reasoning endpoint."}
+          onRetry={() => handleSendMessage(inputValue)}
+          onDismiss={() => {
+            setErrorMessage(null);
+            setViewState('normal');
+          }}
         />
       )}
 
@@ -142,7 +139,7 @@ export default function AssistantPage() {
         <EmptyState
           title="No Messages in History"
           description="Start a new conversation with the AI Construction Engineer."
-          actionLabel="Load Starter Prompts"
+          actionLabel="Load Starter Session"
           onAction={() => {
             setViewState('normal');
             setMessages(INITIAL_MESSAGES);
@@ -166,7 +163,7 @@ export default function AssistantPage() {
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                   </div>
                   <div className="text-[10px] text-slate-400 font-mono">
-                    Phase 1 Demo UI • Multimodal LLM Pending
+                    FastAPI Endpoint Active • Real Reasoning
                   </div>
                 </div>
               </div>
@@ -203,11 +200,12 @@ export default function AssistantPage() {
                   >
                     <div>{msg.text}</div>
                     <div
-                      className={`text-[9px] mt-2 font-mono ${
-                        msg.sender === 'user' ? 'text-slate-800' : 'text-slate-400'
+                      className={`text-[9px] mt-2 font-mono flex items-center justify-between ${
+                        msg.sender === 'user' ? 'text-slate-800' : 'text-slate-500'
                       }`}
                     >
-                      {msg.timestamp}
+                      <span>{msg.timestamp}</span>
+                      {msg.modelUsed && <span>Model: {msg.modelUsed}</span>}
                     </div>
                   </div>
 

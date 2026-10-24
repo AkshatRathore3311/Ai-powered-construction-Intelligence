@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings,
   Shield,
@@ -10,13 +10,17 @@ import {
   AlertTriangle,
   Globe,
   Sliders,
+  RefreshCw,
 } from 'lucide-react';
 import SectionHeader from '../../components/common/SectionHeader';
 import Badge from '../../components/common/Badge';
+import { api } from '../../services/api';
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState('general');
   const [isSaved, setIsSaved] = useState(false);
+  const [healthStatus, setHealthStatus] = useState(null);
+  const [isCheckingHealth, setIsCheckingHealth] = useState(false);
 
   const [settings, setSettings] = useState({
     siteName: 'Metro Heights Tower A',
@@ -25,11 +29,27 @@ export default function SettingsPage() {
     ppeViolationThreshold: 85,
     autoAlertDispatch: true,
     emailAlerts: true,
-    fastApiEndpoint: 'http://localhost:8000/api/v1',
+    fastApiEndpoint: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
     geminiModel: 'gemini-1.5-flash',
     engineerName: 'Alex Mercer',
     engineerRole: 'Lead Structural & Safety Engineer',
   });
+
+  const checkBackend = async () => {
+    setIsCheckingHealth(true);
+    try {
+      const data = await api.getHealth();
+      setHealthStatus(data);
+    } catch (err) {
+      setHealthStatus({ status: 'offline', error: err.message });
+    } finally {
+      setIsCheckingHealth(false);
+    }
+  };
+
+  useEffect(() => {
+    checkBackend();
+  }, []);
 
   const handleSave = (e) => {
     e.preventDefault();
@@ -44,6 +64,21 @@ export default function SettingsPage() {
         subtitle="Manage project sites, safety alert threshold triggers, and backend API integration endpoints"
         badgeText="Configuration"
         badgeVariant="blue"
+        actions={
+          <div className="flex items-center gap-2">
+            {healthStatus?.status === 'healthy' ? (
+              <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-400">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                Backend: Online (v{healthStatus.version})
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-400">
+                <span className="w-2 h-2 rounded-full bg-amber-400" />
+                Backend: Disconnected
+              </span>
+            )}
+          </div>
+        }
       />
 
       {/* Tabs */}
@@ -199,23 +234,40 @@ export default function SettingsPage() {
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4 shadow-xs">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-white">Backend & AI Architecture Setup</h3>
-              <Badge variant="amber">Phase 2-4 Plan</Badge>
+              <button
+                type="button"
+                onClick={checkBackend}
+                disabled={isCheckingHealth}
+                className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isCheckingHealth ? 'animate-spin' : ''}`} />
+                Test Connection
+              </button>
             </div>
 
-            <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 space-y-1">
-              <div className="font-bold flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4" />
-                Security Architecture Notice
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">FastAPI Health Status:</span>
+                <Badge variant={healthStatus?.status === 'healthy' ? 'emerald' : 'rose'} size="xs">
+                  {healthStatus?.status || 'Offline'}
+                </Badge>
               </div>
-              <p className="text-amber-200/90 leading-relaxed">
-                As required by capstone guidelines, private API keys (Gemini, Weather API, Supabase Secret Keys) are strictly stored in the FastAPI backend environment (<code className="font-mono">backend/.env</code>) and NEVER exposed in frontend code.
-              </p>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Multimodal AI Configured:</span>
+                <Badge variant={healthStatus?.ai_configured ? 'emerald' : 'amber'} size="xs">
+                  {healthStatus?.ai_configured ? 'API Key Active' : 'Setup Required (in backend/.env)'}
+                </Badge>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Weather Provider:</span>
+                <span className="font-mono text-emerald-400">Open-Meteo Real-time Feed</span>
+              </div>
             </div>
 
             <div className="space-y-4 pt-2">
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  FastAPI Backend URL (Target for Phase 2 & 3)
+                  FastAPI Backend Base URL (VITE_API_BASE_URL)
                 </label>
                 <input
                   type="text"
@@ -227,15 +279,15 @@ export default function SettingsPage() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Multimodal Reasoning LLM Model
+                  Target Multimodal Reasoning LLM
                 </label>
                 <select
                   value={settings.geminiModel}
                   onChange={(e) => setSettings({ ...settings, geminiModel: e.target.value })}
                   className="w-full text-xs bg-slate-950 border border-slate-800 text-slate-200 rounded-lg p-2.5 focus:border-amber-400 focus:outline-hidden font-mono"
                 >
-                  <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast multimodal inference)</option>
-                  <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep structural reasoning)</option>
+                  <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast multimodal vision)</option>
+                  <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep structural diagnostics)</option>
                 </select>
               </div>
             </div>

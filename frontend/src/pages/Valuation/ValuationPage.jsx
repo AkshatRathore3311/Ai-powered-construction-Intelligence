@@ -16,7 +16,7 @@ import Badge from '../../components/common/Badge';
 import EmptyState from '../../components/common/EmptyState';
 import LoadingState from '../../components/common/LoadingState';
 import ErrorAlert from '../../components/common/ErrorAlert';
-import { SAMPLE_VALUATION_COMPS } from '../../data/sampleData';
+import { api } from '../../services/api';
 
 export default function ValuationPage() {
   const [formData, setFormData] = useState({
@@ -32,6 +32,7 @@ export default function ValuationPage() {
 
   const [isCalculating, setIsCalculating] = useState(false);
   const [valuationResult, setValuationResult] = useState(null);
+  const [errorMessage, setErrorMessage] = useState(null);
   const [viewState, setViewState] = useState('normal');
 
   const handleChange = (e) => {
@@ -42,27 +43,32 @@ export default function ValuationPage() {
     }));
   };
 
-  const handleCalculate = (e) => {
+  const handleCalculate = async (e) => {
     e.preventDefault();
     setIsCalculating(true);
-    setTimeout(() => {
-      setIsCalculating(false);
-      // Realistic calculation based on parameters
-      const basePerSqft = formData.locationTier === 'prime' ? 420 : 310;
-      const qualityMultiplier = formData.structuralGrade === 'grade_a' ? 1.15 : 1.0;
-      const leedBonus = formData.isLeedCertified ? 1.05 : 1.0;
-      const calculatedSqft = Math.round(basePerSqft * qualityMultiplier * leedBonus);
-      const totalEstimated = Math.round(Number(formData.builtUpArea) * calculatedSqft);
+    setErrorMessage(null);
 
-      setValuationResult({
-        estimatedValue: totalEstimated.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }),
-        estimatedPerSqft: `$${calculatedSqft}`,
-        lowRange: (totalEstimated * 0.94).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }),
-        highRange: (totalEstimated * 1.06).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }),
-        confidenceScore: '94.6%',
-        comps: SAMPLE_VALUATION_COMPS,
-      });
-    }, 1000);
+    const payload = {
+      property_type: formData.propertyType,
+      built_up_area_sqft: Number(formData.builtUpArea),
+      land_area_sqft: formData.landArea ? Number(formData.landArea) : null,
+      location_tier: formData.locationTier,
+      structural_grade: formData.structuralGrade,
+      construction_age_stage: formData.constructionAge,
+      transit_proximity_miles: Number(formData.transitProximity),
+      is_leed_certified: Boolean(formData.isLeedCertified),
+    };
+
+    try {
+      // Live backend invocation
+      const res = await api.estimateValuation(payload);
+      setValuationResult(res);
+    } catch (err) {
+      console.error('Valuation error:', err);
+      setErrorMessage(err.message || 'Failed to calculate property valuation.');
+    } finally {
+      setIsCalculating(false);
+    }
   };
 
   return (
@@ -96,12 +102,15 @@ export default function ValuationPage() {
         />
       )}
 
-      {viewState === 'error' && (
+      {(viewState === 'error' || errorMessage) && (
         <ErrorAlert
-          title="Market Comps Feed Unavailable"
-          message="Could not retrieve regional MLS / real estate indices. (Simulated test error)."
-          onRetry={() => setViewState('normal')}
-          onDismiss={() => setViewState('normal')}
+          title="Market Valuation Alert"
+          message={errorMessage || "Could not complete valuation calculation. Check backend service status."}
+          onRetry={handleCalculate}
+          onDismiss={() => {
+            setErrorMessage(null);
+            setViewState('normal');
+          }}
         />
       )}
 
@@ -300,7 +309,9 @@ export default function ValuationPage() {
                   <TrendingUp className="w-4 h-4 text-emerald-400" />
                   <h3 className="text-sm font-bold text-white">Valuation Summary & Appraisal</h3>
                 </div>
-                {valuationResult && <Badge variant="emerald">Confidence: {valuationResult.confidenceScore}</Badge>}
+                {valuationResult && (
+                  <Badge variant="emerald">Confidence: {valuationResult.confidence_score_percentage}%</Badge>
+                )}
               </div>
 
               {valuationResult ? (
@@ -311,57 +322,67 @@ export default function ValuationPage() {
                       Estimated Market Valuation
                     </span>
                     <div className="text-3xl font-black text-emerald-400 font-mono mt-1">
-                      {valuationResult.estimatedValue}
+                      {valuationResult.formatted_value}
                     </div>
                     <div className="flex items-center justify-between text-xs text-slate-400 mt-3 pt-3 border-t border-slate-800/80">
-                      <span>Rate: <strong className="text-white font-mono">{valuationResult.estimatedPerSqft}</strong> / sq.ft</span>
-                      <span>Range: <strong className="text-slate-300 font-mono">{valuationResult.lowRange} - {valuationResult.highRange}</strong></span>
+                      <span>Rate: <strong className="text-white font-mono">{valuationResult.formatted_per_sqft}</strong> / sq.ft</span>
+                      <span>Range: <strong className="text-slate-300 font-mono">${valuationResult.valuation_range_low?.toLocaleString()} - ${valuationResult.valuation_range_high?.toLocaleString()}</strong></span>
                     </div>
                   </div>
 
                   {/* Factor Breakdown */}
-                  <div className="space-y-2 text-xs">
-                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
-                      <span className="text-slate-400">Base Regional Market Rate</span>
-                      <span className="font-mono text-white">$420 / sq.ft</span>
+                  {valuationResult.formula_breakdown && (
+                    <div className="space-y-2 text-xs">
+                      <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+                        <span className="text-slate-400">Base Regional Rate</span>
+                        <span className="font-mono text-white">${valuationResult.formula_breakdown.base_rate_per_sqft} / sq.ft</span>
+                      </div>
+                      <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+                        <span className="text-slate-400">Structural Quality Multiplier</span>
+                        <span className="font-mono text-emerald-400">x{valuationResult.formula_breakdown.structural_grade_multiplier}</span>
+                      </div>
+                      <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+                        <span className="text-slate-400">LEED Green Certified Multiplier</span>
+                        <span className="font-mono text-emerald-400">x{valuationResult.formula_breakdown.leed_green_premium_multiplier}</span>
+                      </div>
                     </div>
-                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
-                      <span className="text-slate-400">Grade A Structural Engineering Multiplier</span>
-                      <span className="font-mono text-emerald-400">+15% Premium</span>
-                    </div>
-                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
-                      <span className="text-slate-400">LEED Green Building Accreditation</span>
-                      <span className="font-mono text-emerald-400">+5% Premium</span>
-                    </div>
-                  </div>
+                  )}
 
                   {/* Recent Comps Table */}
-                  <div className="pt-2">
-                    <h4 className="text-xs font-bold text-white mb-2 uppercase tracking-wider">
-                      Comparable Recent Transactions (Comps)
-                    </h4>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-xs text-slate-300">
-                        <thead className="bg-slate-950 text-slate-400 text-[10px] uppercase font-mono">
-                          <tr>
-                            <th className="p-2 rounded-l">Property</th>
-                            <th className="p-2">Sq. Ft</th>
-                            <th className="p-2">Sale Price</th>
-                            <th className="p-2 rounded-r">Per Sq. Ft</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-800">
-                          {valuationResult.comps.map((comp, idx) => (
-                            <tr key={idx} className="hover:bg-slate-800/40">
-                              <td className="p-2 font-medium text-white">{comp.address}</td>
-                              <td className="p-2 font-mono">{comp.sqft.toLocaleString()}</td>
-                              <td className="p-2 font-mono text-emerald-400">{comp.price}</td>
-                              <td className="p-2 font-mono text-slate-400">{comp.pricePerSqft}</td>
+                  {valuationResult.comparables?.length > 0 && (
+                    <div className="pt-2">
+                      <h4 className="text-xs font-bold text-white mb-2 uppercase tracking-wider">
+                        Comparable Recent Transactions (Comps)
+                      </h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs text-slate-300">
+                          <thead className="bg-slate-950 text-slate-400 text-[10px] uppercase font-mono">
+                            <tr>
+                              <th className="p-2 rounded-l">Property</th>
+                              <th className="p-2">Sq. Ft</th>
+                              <th className="p-2">Sale Price</th>
+                              <th className="p-2 rounded-r">Per Sq. Ft</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800">
+                            {valuationResult.comparables.map((comp, idx) => (
+                              <tr key={idx} className="hover:bg-slate-800/40">
+                                <td className="p-2 font-medium text-white">{comp.address}</td>
+                                <td className="p-2 font-mono">{comp.sqft.toLocaleString()}</td>
+                                <td className="p-2 font-mono text-emerald-400">{comp.sale_price}</td>
+                                <td className="p-2 font-mono text-slate-400">{comp.price_per_sqft}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
+                  )}
+
+                  {/* Disclaimer */}
+                  <div className="pt-2 text-[10px] text-slate-400 border-t border-slate-800/80 leading-relaxed">
+                    <p className="font-semibold text-slate-300">Valuation Disclaimer:</p>
+                    <p>{valuationResult.disclaimer}</p>
                   </div>
                 </div>
               ) : (

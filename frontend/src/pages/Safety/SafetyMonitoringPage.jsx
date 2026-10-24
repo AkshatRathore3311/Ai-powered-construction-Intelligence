@@ -10,7 +10,6 @@ import {
   Sparkles,
   Info,
   RefreshCw,
-  SlidersHorizontal,
 } from 'lucide-react';
 import SectionHeader from '../../components/common/SectionHeader';
 import ImageUploader from '../../components/common/ImageUploader';
@@ -19,32 +18,56 @@ import EmptyState from '../../components/common/EmptyState';
 import LoadingState from '../../components/common/LoadingState';
 import ErrorAlert from '../../components/common/ErrorAlert';
 import { SAMPLE_SAFETY_ANALYSIS_PRESET } from '../../data/sampleData';
+import { api, dataUrlToFile } from '../../services/api';
 
 export default function SafetyMonitoringPage() {
   const [selectedImage, setSelectedImage] = useState(null);
+  const [selectedFileObj, setSelectedFileObj] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
+  const [errorMessage, setErrorMessage] = useState(null);
   const [viewState, setViewState] = useState('normal'); // 'normal', 'loading', 'empty', 'error'
   const [selectedFilter, setSelectedFilter] = useState('all');
 
-  const handleImageSelected = (imageDataUrl) => {
+  const handleImageSelected = async (imageDataUrl, filename = 'site_image.jpg') => {
     setSelectedImage(imageDataUrl);
     setAnalysisResult(null);
+    setErrorMessage(null);
+    try {
+      const file = await dataUrlToFile(imageDataUrl, filename);
+      setSelectedFileObj(file);
+    } catch (e) {
+      console.error('File conversion error:', e);
+    }
   };
 
   const handleClearImage = () => {
     setSelectedImage(null);
+    setSelectedFileObj(null);
     setAnalysisResult(null);
+    setErrorMessage(null);
   };
 
-  const handleRunAnalysis = () => {
+  const handleRunAnalysis = async () => {
     if (!selectedImage) return;
     setIsAnalyzing(true);
-    // Simulate multimodal CV inference latency
-    setTimeout(() => {
+    setErrorMessage(null);
+
+    try {
+      let fileToUpload = selectedFileObj;
+      if (!fileToUpload) {
+        fileToUpload = await dataUrlToFile(selectedImage, 'site_inspection.jpg');
+      }
+
+      // Live FastAPI backend invocation
+      const response = await api.analyzeSafety(fileToUpload, 'Metro Heights Tower A');
+      setAnalysisResult(response);
+    } catch (err) {
+      console.error('Safety analysis failed:', err);
+      setErrorMessage(err.message || 'Failed to communicate with safety inference endpoint.');
+    } finally {
       setIsAnalyzing(false);
-      setAnalysisResult(SAMPLE_SAFETY_ANALYSIS_PRESET);
-    }, 1200);
+    }
   };
 
   return (
@@ -53,7 +76,7 @@ export default function SafetyMonitoringPage() {
       <SectionHeader
         title="Construction Site Safety Monitoring"
         subtitle="Automated PPE verification, hazard boundary inspection, and OSHA compliance scanning"
-        badgeText="Computer Vision"
+        badgeText="Computer Vision + LLM"
         badgeVariant="amber"
         actions={
           <div className="flex items-center gap-2">
@@ -80,12 +103,15 @@ export default function SafetyMonitoringPage() {
         />
       )}
 
-      {viewState === 'error' && (
+      {(viewState === 'error' || errorMessage) && (
         <ErrorAlert
-          title="Inference Connection Failed"
-          message="FastAPI AI endpoint unreachable. (Note: Backend is scheduled for implementation in Phase 2 & 4)."
-          onRetry={() => setViewState('normal')}
-          onDismiss={() => setViewState('normal')}
+          title="Inference Connection Alert"
+          message={errorMessage || "FastAPI AI endpoint unreachable. Ensure backend server is running."}
+          onRetry={handleRunAnalysis}
+          onDismiss={() => {
+            setErrorMessage(null);
+            setViewState('normal');
+          }}
         />
       )}
 
@@ -96,8 +122,7 @@ export default function SafetyMonitoringPage() {
           actionLabel="Load Sample Inspection Image"
           onAction={() => {
             setViewState('normal');
-            setSelectedImage(SAMPLE_SAFETY_ANALYSIS_PRESET.imageUrl);
-            setAnalysisResult(SAMPLE_SAFETY_ANALYSIS_PRESET);
+            handleImageSelected(SAMPLE_SAFETY_ANALYSIS_PRESET.imageUrl, "sample.jpg");
           }}
         />
       )}
@@ -132,7 +157,7 @@ export default function SafetyMonitoringPage() {
                 <div className="text-xs text-slate-400">
                   {selectedImage ? (
                     <span className="text-emerald-400 font-mono flex items-center gap-1.5">
-                      <CheckCircle2 className="w-3.5 h-3.5" /> Image loaded and preprocessed
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Image ready for backend upload
                     </span>
                   ) : (
                     <span>Select an image or load the sample above to start</span>
@@ -163,15 +188,20 @@ export default function SafetyMonitoringPage() {
               </div>
             </div>
 
-            {/* Detection Bounding Box Guide Card */}
+            {/* Detection Bounding Entities Card */}
             {analysisResult && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
                 <div className="flex items-center justify-between mb-3">
-                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                    Identified Bounding Entities ({analysisResult.detections.length})
-                  </h4>
+                  <div>
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                      Identified Entities ({analysisResult.detections?.length || 0})
+                    </h4>
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      Engine: {analysisResult.method}
+                    </span>
+                  </div>
                   <div className="flex gap-1.5">
-                    {['all', 'violation', 'hazard', 'safe'].map((filter) => (
+                    {['all', 'worker_safe', 'ppe_violation', 'perimeter_hazard'].map((filter) => (
                       <button
                         key={filter}
                         onClick={() => setSelectedFilter(filter)}
@@ -181,7 +211,7 @@ export default function SafetyMonitoringPage() {
                             : 'bg-slate-800 text-slate-400 hover:text-white'
                         }`}
                       >
-                        {filter}
+                        {filter.replace('_', ' ')}
                       </button>
                     ))}
                   </div>
@@ -189,43 +219,46 @@ export default function SafetyMonitoringPage() {
 
                 <div className="space-y-2">
                   {analysisResult.detections
-                    .filter((d) => selectedFilter === 'all' || d.status === selectedFilter)
-                    .map((item, index) => (
+                    ?.filter((d) => selectedFilter === 'all' || d.category === selectedFilter)
+                    ?.map((item, index) => (
                       <div
                         key={index}
                         className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-3 ${
-                          item.status === 'violation'
+                          item.category === 'ppe_violation'
                             ? 'bg-rose-500/10 border-rose-500/30 text-rose-200'
-                            : item.status === 'hazard'
+                            : item.category === 'perimeter_hazard'
                             ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
                             : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
                         }`}
                       >
                         <div className="flex items-center gap-2.5">
-                          {item.status === 'violation' ? (
+                          {item.category === 'ppe_violation' ? (
                             <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                          ) : item.status === 'hazard' ? (
+                          ) : item.category === 'perimeter_hazard' ? (
                             <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
                           ) : (
                             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                           )}
-                          <span className="font-medium text-white">{item.label}</span>
+                          <div>
+                            <span className="font-medium text-white">{item.label}</span>
+                            {item.notes && <p className="text-[10px] text-slate-400 mt-0.5">{item.notes}</p>}
+                          </div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <span className="font-mono text-[11px] text-slate-400">
-                            Confidence: {(item.confidence * 100).toFixed(0)}%
+                            {(item.confidence * 100).toFixed(0)}%
                           </span>
                           <Badge
                             variant={
-                              item.status === 'violation'
+                              item.category === 'ppe_violation'
                                 ? 'rose'
-                                : item.status === 'hazard'
+                                : item.category === 'perimeter_hazard'
                                 ? 'amber'
                                 : 'emerald'
                             }
                             size="xs"
                           >
-                            {item.status}
+                            {item.category.replace('_', ' ')}
                           </Badge>
                         </div>
                       </div>
@@ -252,10 +285,10 @@ export default function SafetyMonitoringPage() {
                         Calculated Safety Rating
                       </div>
                       <div className="text-2xl font-black text-amber-400 font-mono mt-1">
-                        78%
+                        {analysisResult.summary?.compliance_score_percentage}%
                       </div>
                       <div className="text-xs text-amber-300/80 font-medium mt-0.5">
-                        Attention Needed — PPE Gaps
+                        {analysisResult.summary?.safety_rating}
                       </div>
                     </div>
                     <div className="w-14 h-14 rounded-full bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
@@ -267,48 +300,50 @@ export default function SafetyMonitoringPage() {
                     <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                       <div className="text-slate-400">Workers Scanned</div>
                       <div className="text-lg font-bold text-white font-mono mt-1">
-                        {analysisResult.summary.totalPeople}
+                        {analysisResult.summary?.total_workers_observed}
                       </div>
                     </div>
                     <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                       <div className="text-slate-400">PPE Compliant</div>
                       <div className="text-lg font-bold text-emerald-400 font-mono mt-1">
-                        {analysisResult.summary.ppeCompliantWorkers}
+                        {analysisResult.summary?.ppe_compliant_count}
                       </div>
                     </div>
                     <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                       <div className="text-slate-400">PPE Violations</div>
                       <div className="text-lg font-bold text-rose-400 font-mono mt-1">
-                        {analysisResult.summary.ppeNonCompliantWorkers}
+                        {analysisResult.summary?.ppe_violations_count}
                       </div>
                     </div>
                     <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                       <div className="text-slate-400">Perimeter Hazards</div>
                       <div className="text-lg font-bold text-amber-400 font-mono mt-1">
-                        {analysisResult.summary.perimeterHazards}
+                        {analysisResult.summary?.hazard_zones_count}
                       </div>
                     </div>
                   </div>
 
-                  {/* Immediate Action Checklist */}
-                  <div className="pt-3 border-t border-slate-800">
-                    <h4 className="text-xs font-bold text-white mb-2 uppercase tracking-wider">
-                      Supervisor Action Checklist
-                    </h4>
-                    <ul className="space-y-2 text-xs text-slate-300">
-                      <li className="flex items-start gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-rose-400 mt-1.5 shrink-0" />
-                        <span>Issue High-Vis Vest to Worker in Zone 2 immediately.</span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 shrink-0" />
-                        <span>Erect high-visibility cones along heavy machinery swing radius.</span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-1.5 shrink-0" />
-                        <span>Scaffolding tier harness anchor verified compliant with OSHA standard 1926.</span>
-                      </li>
-                    </ul>
+                  {/* Recommendations */}
+                  {analysisResult.recommendations?.length > 0 && (
+                    <div className="pt-3 border-t border-slate-800">
+                      <h4 className="text-xs font-bold text-white mb-2 uppercase tracking-wider">
+                        Supervisor Action Checklist
+                      </h4>
+                      <ul className="space-y-2 text-xs text-slate-300">
+                        {analysisResult.recommendations.map((rec, i) => (
+                          <li key={i} className="flex items-start gap-2">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 shrink-0" />
+                            <span>{rec}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Disclaimer & Limitations */}
+                  <div className="pt-2 text-[10px] text-slate-400 border-t border-slate-800/80 leading-relaxed">
+                    <p className="font-semibold text-slate-300">Disclaimer:</p>
+                    <p>{analysisResult.disclaimer}</p>
                   </div>
                 </div>
               ) : (
